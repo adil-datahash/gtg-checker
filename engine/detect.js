@@ -2,6 +2,7 @@
 // Rules are written from Google's public Google tag gateway documentation and
 // public CDN response-header conventions. Keep this file server-side only.
 import { PROVIDERS, KIND_ORDER, KIND_LABEL } from './providers.js';
+import { classifyNetwork } from './networks.js';
 
 const MULTI_PART_SUFFIXES = new Set([
   'co.uk', 'org.uk', 'ac.uk', 'gov.uk', 'com.au', 'net.au', 'org.au', 'co.in', 'net.in', 'org.in',
@@ -175,7 +176,7 @@ function matchCnames(cnames) {
   return hits;
 }
 
-export function fingerprintInfra(rawHeaders, cnames = [], assetHosts = []) {
+export function fingerprintInfra(rawHeaders, cnames = [], assetHosts = [], network = null) {
   const h = normalizeHeaders(rawHeaders);
   const cookies = h['set-cookie'] || '';
   const found = new Map(); // id -> { provider, via: Set, depth }
@@ -195,6 +196,14 @@ export function fingerprintInfra(rawHeaders, cnames = [], assetHosts = []) {
   for (const hit of matchCnames(cnames)) {
     add(hit.provider, 'dns', hit.depth);
     signals.push({ check: 'DNS CNAME', value: hit.cname, points_to: hit.provider.name });
+  }
+
+  // The network that owns the site's address (ASN). Cannot be rewritten by anything in between.
+  const net = classifyNetwork(network);
+  if (net) {
+    const p = net.providerId ? PROVIDERS.find((x) => x.id === net.providerId) : null;
+    if (p) add(p, 'network', 50);
+    signals.push({ check: 'IP network', value: `AS${net.asn} ${net.org}`, points_to: p ? p.name : null });
   }
 
   // Order: outermost kind first, then earlier in the CNAME chain, then catalogue order.
@@ -219,9 +228,9 @@ export function fingerprintInfra(rawHeaders, cnames = [], assetHosts = []) {
   let proxyType = 'unknown';
   if (primary) proxyType = ['paas', 'managed'].includes(primary.kind) ? 'managed_platform' : 'full_reverse_proxy';
   else if (assetCdns.length) proxyType = 'asset_only_cdn';
-  else if (originLayer) proxyType = 'origin_direct';
+  else if (originLayer || net) proxyType = 'origin_direct';
 
-  if (!ranked.length) signals.push({ check: 'Response header', value: 'No CDN or server header exposed', points_to: null });
+  if (!ranked.length && !net) signals.push({ check: 'Response header', value: 'No CDN or server header exposed', points_to: null });
 
   return {
     primary: primary ? primary.name : null,
@@ -233,6 +242,7 @@ export function fingerprintInfra(rawHeaders, cnames = [], assetHosts = []) {
     server: originLayer ? originLayer.provider.name : null,
     serverId: originLayer ? originLayer.provider.id : null,
     serverHeader: h.server || null,
+    network: net ? { asn: net.asn, org: net.org, label: net.label, isEdge: Boolean(net.providerId) } : null,
     assetCdns,
     signals,
     poweredBy: h['x-powered-by'] || null
@@ -309,6 +319,10 @@ export function recommendRoute(infra, platform) {
   if ((infra.proxyType === 'asset_only_cdn' || infra.proxyType === 'origin_direct') && infra.serverId) {
     const p = byId(infra.serverId);
     return { key: p.id, ...p.route };
+  }
+  if (infra.proxyType === 'origin_direct') {
+    const where = infra.network && !infra.network.isEdge ? ` Your server is hosted on ${infra.network.label}.` : '';
+    return { key: 'web_server', label: 'Your web server', effort: 'Medium', note: `No CDN sits in front of your main domain, so the proxy rule goes on the web server itself.${where}`, eligible: 'yes' };
   }
   if (infra.proxyType === 'asset_only_cdn') {
     return { key: 'web_server', label: 'Your web server', effort: 'Medium', note: 'No CDN sits in front of your main domain, so the proxy rule goes on the web server itself.', eligible: 'yes' };
@@ -397,9 +411,9 @@ export function describeGtgDeployment(verdict, probes, siteInfra) {
 
 // One call that builds the complete report from collected evidence.
 export function buildReport(evidence) {
-  const { inputUrl, finalUrl, status, headers, html, cnames = [], assetHosts = [], probes = {}, scannedAt, browser = null } = evidence;
+  const { inputUrl, finalUrl, status, headers, html, cnames = [], assetHosts = [], probes = {}, scannedAt, browser = null, network = null } = evidence;
   const tags = extractTags(html, finalUrl, browser && browser.ran ? browser.tagRequests : []);
-  const infra = fingerprintInfra(headers, cnames, assetHosts);
+  const infra = fingerprintInfra(headers, cnames, assetHosts, network);
   const platform = detectPlatform(headers, html);
   const blocked = detectBlock(status, headers, html);
   const verdict = decide({ tags, probes, blocked, browser });
@@ -448,7 +462,8 @@ export function freeSummary(report) {
     status: report.verdict.status,
     confidence: report.verdict.confidence || null,
     servingMode: report.verdict.servingMode || null,
-    cdn: report.infra.primary || (report.infra.proxyType === 'origin_direct' || report.infra.proxyType === 'asset_only_cdn' ? report.infra.server || 'Web server' : null),
+    cdn: report.infra.primary || (report.infra.proxyType === 'asset_only_cdn' ? report.infra.server || 'Web server' : report.infra.server || null),
+    hostedOn: report.infra.network && !report.infra.network.isEdge ? report.infra.network.label : null,
     platform: report.platform.name,
     gtgServedBy: report.gtg ? report.gtg.servedBy : null,
     gtgBasis: report.gtg ? report.gtg.basis : null,

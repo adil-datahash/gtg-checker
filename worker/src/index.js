@@ -6,6 +6,7 @@
 import { buildReport, freeSummary } from '../../engine/detect.js';
 import { validateLead, gradeLead, buildLeadPayload, LeadError } from '../../engine/lead.js';
 import { normalizeInputUrl, guardedFetch, probeGtgPath, assetSubdomains, makeDeps, ScanError } from './net.js';
+import { browserTagRequests } from './browser.js';
 
 const CONSENT_VERSION = 'gtg-consent-v1';
 const flag = (v, dflt) => (v === undefined || v === '' ? dflt : String(v).toLowerCase() === 'true');
@@ -28,6 +29,12 @@ export function getConfig(env = {}) {
 
 // ---------- scan ----------
 
+// The plain HTML cannot settle these, so they get the browser check (when configured).
+function needsBrowser(report) {
+  const v = report.verdict;
+  return v.status === 'no_google_tags' || (v.status === 'unconfirmed' && v.servingMode === 'not_in_static_html');
+}
+
 export async function runScan(rawUrl, deps) {
   const input = normalizeInputUrl(rawUrl);
   const page = await guardedFetch(input, { deps });
@@ -35,19 +42,31 @@ export async function runScan(rawUrl, deps) {
   const html = page.body;
   const scannedAt = new Date().toISOString();
 
-  const assetHosts = [];
-  for (const h of assetSubdomains(html, page.url.hostname)) {
-    try { assetHosts.push({ host: h, cnames: (await deps.resolveHost(h)).cnames }); } catch {}
-  }
-  // The Worker has no browser, so tags added by scripts end as "could not confirm" (reason browser_not_run).
-  const browser = { ran: false, error: 'browser_unavailable', tagRequests: [] };
-  const base = { inputUrl: input.href, finalUrl, status: page.status, headers: page.headers, html, cnames: page.cnames, assetHosts, scannedAt, browser };
+  // Asset subdomains and the owner network of the site's address, in parallel.
+  const [assetHosts, network] = await Promise.all([
+    Promise.all(assetSubdomains(html, page.url.hostname).map(async (h) => {
+      try { return { host: h, cnames: (await deps.resolveHost(h)).cnames }; } catch { return null; }
+    })).then((a) => a.filter(Boolean)),
+    deps.lookupNetwork ? deps.lookupNetwork((page.ips || [])[0]) : null
+  ]);
 
-  const draft = buildReport({ ...base, probes: {} });
+  const base = { inputUrl: input.href, finalUrl, status: page.status, headers: page.headers, html, cnames: page.cnames, assetHosts, scannedAt, network };
+
+  // 1. Plain HTML.
+  let browser = { ran: false, error: 'browser_not_run', tagRequests: [] };
+  let draft = buildReport({ ...base, probes: {}, browser });
+
+  // 2. If that cannot settle it, ask a real browser for the rendered page.
+  if (needsBrowser(draft) && deps.browserScan) {
+    browser = await deps.browserScan(finalUrl).catch(() => ({ ran: false, error: 'browser_failed', tagRequests: [] }));
+    draft = buildReport({ ...base, probes: {}, browser });
+  }
+
+  // 3. Every first-party path found either way gets the health check (max 3).
   const toProbe = draft.tags.loaders.filter((l) => l.serving === 'first_party_path').slice(0, 3);
   const probes = {};
   await Promise.all(toProbe.map(async (l) => { probes[l.path] = await probeGtgPath(page.url.origin, l.path, l.id, deps); }));
-  return buildReport({ ...base, probes });
+  return buildReport({ ...base, probes, browser });
 }
 
 // ---------- cache + rate limit (per Worker instance; KV / rate-limit bindings used when configured) ----------
@@ -184,7 +203,8 @@ export function makeHandler({ fetchImpl = (...a) => fetch(...a) } = {}) {
     if (Number(request.headers.get('content-length') || 0) > 20_000) return json(413, { error: 'too_large' }, cors);
     const body = await request.json().catch(() => ({}));
     const ip = request.headers.get('cf-connecting-ip') || 'unknown';
-    const ctx = { env, cfg, ip, deps: makeDeps(fetchImpl), fetchImpl, page: request.headers.get('referer') || '' };
+    const deps = { ...makeDeps(fetchImpl), browserScan: (u) => browserTagRequests(u, env, fetchImpl) };
+    const ctx = { env, cfg, ip, deps, fetchImpl, page: request.headers.get('referer') || '' };
     let result;
     if (url.pathname.endsWith('/api/scan')) result = await handleScan(body || {}, ctx);
     else if (url.pathname.endsWith('/api/lead')) result = await handleLead(body || {}, ctx);

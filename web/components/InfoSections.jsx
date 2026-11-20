@@ -1,8 +1,8 @@
 import platforms from '@/lib/client/platforms.json';
 const CHECKS = [
   { t: 'Where your tags load from', d: 'We read your home page and find every Google Tag Manager, GA4 and Google Ads tag, and whether it loads from googletagmanager.com or from a path on your own domain.' },
-  { t: 'Whether the gateway answers', d: 'If we find a path on your domain, we call its health check and confirm it returns Google tag code.' },
-  { t: 'What sits in front of your site', d: 'We read public response headers and DNS records to identify your CDN, load balancer or web server, and whether it handles all traffic or only images and files.' },
+  { t: 'Whether the gateway answers', d: 'If we find a path on your domain, we call its health check and confirm it returns Google tag code. When your tag is added by a script, we load the page in a real browser to find it.' },
+  { t: 'What sits in front of your site', d: 'We read public response headers, DNS records and the network that owns your address to identify your CDN, load balancer or host, and whether it handles all traffic or only images and files.' },
   { t: 'How you would set it up', d: 'We match your infrastructure to the setup route that fits it, so your developers know where the change goes.' }
 ];
 

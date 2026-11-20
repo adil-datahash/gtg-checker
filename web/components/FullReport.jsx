@@ -109,6 +109,7 @@ export default function FullReport({ report, dryRun }) {
           ) : null}
           <div><dt>How traffic flows</dt><dd>{PROXY_TYPE[report.infra.proxyType]}</dd></div>
           {report.infra.server ? <div><dt>Web server</dt><dd>{report.infra.server}</dd></div> : null}
+          {report.infra.network ? <div><dt>Network of your address</dt><dd>{report.infra.network.label} (AS{report.infra.network.asn})</dd></div> : null}
           {report.infra.assetCdns?.length ? <div><dt>Asset CDN</dt><dd>{report.infra.assetCdns.map((a) => `${a.cdn} on ${a.host}`).join('; ')}</dd></div> : null}
           <div><dt>Platform</dt><dd>{report.platform.name || 'Not identified'}{report.platform.hosted ? ' (hosted)' : ''}</dd></div>
         </dl>

@@ -1,5 +1,5 @@
 {
-  "total": 69,
+  "total": 70,
   "groups": [
     {
       "kind": "security",
@@ -7,6 +7,7 @@
       "names": [
         "Sucuri",
         "Imperva (Incapsula)",
+        "Link11",
         "Reblaze",
         "Myra Security",
         "Radware Cloud WAF",

@@ -80,7 +80,7 @@ const DNS_ONLY = { aws_amplify: 'main.d1abc.amplifyapp.com' };
 
 test('every provider in the catalogue has a fixture', () => {
   for (const p of PROVIDERS) {
-    assert.ok(HEADER_FIXTURES[p.id] || DNS_ONLY[p.id], `missing fixture for ${p.id}`);
+    assert.ok(HEADER_FIXTURES[p.id] || DNS_ONLY[p.id] || p.networkOnly, `missing fixture for ${p.id}`);
   }
 });
 
@@ -170,4 +170,55 @@ test('GitHub Pages on Fastly routes to GitHub Pages (Limited), not Fastly', () =
   const route = recommendRoute(infra, {});
   assert.equal(route.key, 'github_pages');
   assert.equal(route.eligible, 'limited');
+});
+
+// ---------- network (ASN) ----------
+import { classifyNetwork, orgName } from '../networks.js';
+
+// Real names from live lookups (20 Nov 2026).
+const LIVE = {
+  'gcore.com': ['199524', 'GCORE - G-Core Labs S.A., LU', 'gcore'],
+  'qrator.net': ['209671', 'QRATOR-SW - Qrator Labs CZ s.r.o., CZ', 'qrator'],
+  'fastly.com': ['54113', 'FASTLY - Fastly, Inc., US', 'fastly'],
+  'www.akamai.com': ['20940', 'AKAMAI-ASN1 - Akamai International B.V., NL', 'akamai'],
+  'bunny.net': ['200325', 'BunnyCDN - BUNNYWAY, informacijske storitve d.o.o., SI', 'bunny'],
+  'imperva.com': ['19551', 'INCAPSULA - Incapsula Inc, US', 'imperva'],
+  'sucuri.net': ['30148', 'SUCURI-SEC - Sucuri, US', 'sucuri'],
+  'cachefly.com': ['30081', 'CACHENETWORKS - CacheFly, US', 'cachefly'],
+  'medianova.com': ['21245', 'Medianova - MEDIANOVA INTERNET HIZMETLERI VE TICARET ANONIM SIRKETI, TR', 'medianova'],
+  'reblaze.com': ['34309', 'LINK11 - Link11 GmbH, DE', 'link11'],
+  'fly.io': ['40509', 'FLY - Fly.io, Inc., US', 'fly'],
+  'render.com': ['397273', 'RENDER - Render, US', 'render'],
+  'kinsta.com': ['13335', 'CLOUDFLARENET - Cloudflare, Inc., US', 'cloudflare']
+};
+for (const [site, [asn, name, id]] of Object.entries(LIVE)) {
+  test(`network ${name.split(' ')[0]} (${site}) -> ${id}`, () => {
+    const infra = fingerprintInfra({}, [], [], { asn, name });
+    assert.equal(infra.primaryId, id);
+    assert.ok(infra.signals.some((s) => s.check === 'IP network' && s.points_to));
+  });
+}
+
+test('hosting networks are shown, not treated as a CDN', () => {
+  for (const [name, label] of [['AMAZON-02 - Amazon.com, Inc., US', 'Amazon Web Services'], ['DIGITALOCEAN-ASN - DigitalOcean, LLC, US', 'DigitalOcean'],
+    ['AS-VULTR - The Constant Company, LLC, US', 'Vultr'], ['GOOGLE - Google LLC, US', 'Google Cloud'], ['AUTOMATTIC - Automattic, Inc, US', 'Automattic (WordPress.com / VIP)'],
+    ['AKAMAI-LINODE-AP - Akamai Connected Cloud, SG', 'Akamai Cloud (Linode)']]) {
+    const infra = fingerprintInfra({}, [], [], { asn: '1', name });
+    assert.equal(infra.primary, null, name);
+    assert.equal(infra.network.label, label);
+    assert.equal(infra.proxyType, 'origin_direct');
+    const route = recommendRoute(infra, {});
+    assert.equal(route.key, 'web_server');
+    assert.match(route.note, new RegExp(label.replace(/[()]/g, '.')));
+  }
+});
+
+test('unknown network keeps its organisation name', () => {
+  assert.equal(orgName('SOPRADO-ANY - SOPRADO GmbH, DE'), 'SOPRADO GmbH');
+  assert.equal(classifyNetwork({ asn: '20546', name: 'SOPRADO-ANY - SOPRADO GmbH, DE' }).label, 'SOPRADO GmbH');
+});
+
+test('headers still win over the hosting network: CloudFront on Amazon addresses', () => {
+  const infra = fingerprintInfra({ 'x-amz-cf-id': 'a', 'x-amz-cf-pop': 'BOM' }, [], [], { asn: '16509', name: 'AMAZON-02 - Amazon.com, Inc., US' });
+  assert.equal(infra.primary, 'Amazon CloudFront');
 });

@@ -72,6 +72,17 @@ for your approval.
 3. Worker secret `TURNSTILE_SECRET` = the secret key: Workers & Pages > dh-gtg-checker-api > Settings >
    Variables and Secrets > Add (type Secret).
 
+### 7. Turn on the browser check (free allowance)
+Sites that add their Google tag with a script need a real browser. The Worker uses Cloudflare Browser Run for those.
+1. Cloudflare > My Profile > API Tokens > Create Token. Policy: **Account > Browser Rendering > Edit** for your
+   account. Copy the token.
+2. Cloudflare > Workers & Pages > dh-gtg-checker-api > Settings > Variables and Secrets > Add: type **Secret**,
+   name `BROWSER_API_TOKEN`, value = the token.
+3. Re-run the Worker deploy (it sets `BROWSER_ACCOUNT_ID` itself).
+Free plan: 10 minutes of browser time a day and one browser request every 10 seconds. The check runs only when the
+page HTML cannot settle the answer; when the allowance is used up, the result stays "could not confirm".
+Switch it off with `BROWSER_CHECK = "false"` in `worker/wrangler.toml`.
+
 ### Optional settings
 | Where | Name | What |
 |---|---|---|
@@ -113,11 +124,19 @@ A dashboard change is overwritten by the next Worker deploy, so also change the 
 3. Find every Google tag loader. A same-domain `/<path>/?id=GTM-…` is a gateway candidate: it gets
    `/<path>/healthy` (must answer `ok`) and the loader fetch (must return Google tag code). The loader's
    response headers show **which layer runs the gateway**.
-4. Identify the CDN, WAF, load balancer, host and server (69 providers), platform, and setup route.
+4. Identify the CDN, WAF, load balancer, host and server (70 providers), platform, and setup route. Besides
+   headers and CNAMEs, the scanner looks up **which network owns the site's address** (Team Cymru's free
+   IP-to-ASN lookup over DNS). That recognises Gcore, Qrator, Fastly, Akamai, Bunny, Sucuri, Imperva and others
+   even when headers are hidden, and shows "Hosted on Amazon Web Services / DigitalOcean / …" when no CDN is in front.
+5. When the HTML alone cannot settle it, Cloudflare Browser Run renders the page and the scanner reads the tag
+   loaders the scripts added; any first-party path then gets the `/healthy` check.
 
-**Difference from the full Next.js server version:** the Worker has no headless browser. When a site adds its
-tag with a script after the page loads, the result is **"could not confirm"** (never "not set up") and the
-visitor is offered a manual check. The server version (separate project) covers those with Chrome.
+**Cloudflare rewrites headers.** Responses the Worker fetches arrive with `server: cloudflare` whatever the site
+sent. So Cloudflare headers count only when the site's address is in Cloudflare's published ranges, and the real
+web server name (Nginx, Apache…) of a site with no CDN cannot be seen from the Worker.
+
+**Without the browser check** (no token, or the free allowance used up), a site whose tag is added by a script
+gets **"could not confirm"** (never "not set up") and the visitor is offered a manual check.
 
 ## Limits of the free setup
 

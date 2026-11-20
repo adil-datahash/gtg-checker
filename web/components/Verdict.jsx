@@ -22,8 +22,14 @@ export default function Verdict({ summary, onReset }) {
         ) : null}
         <div>
           <dt>CDN in front of your site</dt>
-          <dd>{summary.cdn || 'Not identified'}</dd>
+          <dd>{summary.cdn || (summary.hostedOn ? 'None found' : 'Not identified')}</dd>
         </div>
+        {summary.hostedOn ? (
+          <div>
+            <dt>Hosted on</dt>
+            <dd>{summary.hostedOn}</dd>
+          </div>
+        ) : null}
         <div>
           <dt>Platform</dt>
           <dd>{summary.platform || 'Not identified'}</dd>

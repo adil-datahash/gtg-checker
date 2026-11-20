@@ -53,4 +53,4 @@ jobs:
           # Only your github.io site (plus any extra origins you list) may call the API.
           ORIGINS="https://${GITHUB_REPOSITORY_OWNER,,}.github.io"
           if [ -n "$EXTRA_ORIGINS" ]; then ORIGINS="$ORIGINS,$EXTRA_ORIGINS"; fi
-          npx wrangler deploy --var "ALLOWED_ORIGINS:$ORIGINS"
+          npx wrangler deploy --var "ALLOWED_ORIGINS:$ORIGINS" --var "BROWSER_ACCOUNT_ID:$CLOUDFLARE_ACCOUNT_ID"

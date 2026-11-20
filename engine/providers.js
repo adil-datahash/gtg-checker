@@ -48,6 +48,12 @@ export const PROVIDERS = [
     route: edge('Imperva Cloud WAF', 'Medium', 'Add a site rule that forwards the measurement path to Google, or ask your Imperva account team to add it.', 'conditional')
   },
   {
+    id: 'link11', name: 'Link11', kind: 'security', networkOnly: true,
+    test: () => false, // recognised from its network (ASN), not from headers
+    cnames: [],
+    route: edge('Link11', 'Medium', 'Link11 sits in front of your site. Path routing to Google is set up through Link11, or on the server behind it.', 'conditional')
+  },
+  {
     id: 'reblaze', name: 'Reblaze', kind: 'security',
     test: (h, c) => m(h.server, /reblaze/i) || m(c, /rbzid/i),
     cnames: [/\.reblaze\.(com|io)$/i],

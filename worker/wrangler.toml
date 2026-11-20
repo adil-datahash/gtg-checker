@@ -16,10 +16,15 @@ LEADS_DRY_RUN = "true"
 SCAN_RATE_PER_MINUTE = "10"
 LEAD_RATE_PER_MINUTE = "5"
 
+# Browser check (Cloudflare Browser Run). The deploy workflow sets BROWSER_ACCOUNT_ID from your account ID.
+# Set "false" to switch the browser check off.
+BROWSER_CHECK = "true"
+
 # Secrets: set once in Cloudflare (dashboard, or `npx wrangler secret put NAME`), never in this repo.
 #   TURNSTILE_SECRET        bot check (pairs with the site key the Pages build uses)
 #   ZOHO_FLOW_WEBHOOK_URL   live lead destination
 #   DRY_RUN_WEBHOOK_URL     internal test webhook while in dry run (optional)
+#   BROWSER_API_TOKEN       Cloudflare API token with "Browser Rendering - Edit" (enables the browser check)
 
 # Optional, both free: a shared 24 h cache and a shared rate limit across Worker instances.
 # Uncomment after creating the KV namespace (`npx wrangler kv namespace create SCAN_CACHE`).

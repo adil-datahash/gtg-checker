@@ -43,14 +43,10 @@ export function isPrivateIp(ip) {
   }
   const p = s.split('.').map(Number);
   if (p.length !== 4 || p.some((n) => Number.isNaN(n) || n < 0 || n > 255)) return true;
-  // const [a, b] = p;
-  // return a === 0 || a === 10 || a === 127 || (a === 100 && b >= 64 && b <= 127) || (a === 169 && b === 254) ||
-  //   (a === 172 && b >= 16 && b <= 31) || (a === 192 && b === 168) || (a === 192 && b === 0) ||
-  //   (a === 198 && (b === 18 || b === 19)) || a >= 224;
   const [a, b, c] = p;
   return a === 0 || a === 10 || a === 127 || (a === 100 && b >= 64 && b <= 127) || (a === 169 && b === 254) ||
     (a === 172 && b >= 16 && b <= 31) || (a === 192 && b === 168) ||
-    (a === 192 && b === 0 && (c === 0 || c === 2)) ||
+    (a === 192 && b === 0 && (c === 0 || c === 2)) ||           // 192.0.0.0/24 and TEST-NET-1 only (192.0.66.x is public)
     (a === 198 && (b === 18 || b === 19)) || (a === 198 && b === 51 && c === 100) || (a === 203 && b === 0 && c === 113) ||
     a >= 224;
 }
@@ -77,8 +73,32 @@ export async function resolveHost(host, fetchImpl = fetch) {
   return { ips, cnames };
 }
 
+// Which network owns an IPv4 address: Team Cymru's public IP-to-ASN service, asked through DNS-over-HTTPS.
+//   4.3.2.1.origin.asn.cymru.com TXT -> "13335 | 104.16.0.0/13 | US | arin | 2010-07-14"
+//   AS13335.asn.cymru.com TXT        -> "13335 | US | arin | 2010-07-14 | CLOUDFLARENET - Cloudflare, Inc., US"
+const asnNames = new Map();
+export async function lookupNetwork(ip, fetchImpl = fetch) {
+  if (!ip || ip.includes(':')) return null;
+  try {
+    const rev = ip.split('.').reverse().join('.');
+    const origin = await doh(`${rev}.origin.asn.cymru.com`, 'TXT', fetchImpl);
+    const first = origin.find((r) => r.type === 16);
+    if (!first) return null;
+    const asn = first.data.replace(/"/g, '').split('|')[0].trim().split(/\s+/)[0];
+    if (!/^\d+$/.test(asn)) return null;
+    if (!asnNames.has(asn)) {
+      const named = await doh(`AS${asn}.asn.cymru.com`, 'TXT', fetchImpl);
+      const row = named.find((r) => r.type === 16);
+      asnNames.set(asn, row ? row.data.replace(/"/g, '').split('|').pop().trim() : '');
+      if (asnNames.size > 2000) asnNames.delete(asnNames.keys().next().value);
+    }
+    const name = asnNames.get(asn);
+    return name ? { asn, name } : null;
+  } catch { return null; }
+}
+
 export function makeDeps(fetchImpl = fetch) {
-  return { fetch: fetchImpl, resolveHost: (h) => resolveHost(h, fetchImpl) };
+  return { fetch: fetchImpl, resolveHost: (h) => resolveHost(h, fetchImpl), lookupNetwork: (ip) => lookupNetwork(ip, fetchImpl) };
 }
 
 async function readCapped(res, maxBytes) {
@@ -91,7 +111,7 @@ async function readCapped(res, maxBytes) {
     if (done) break;
     total += value.byteLength;
     chunks.push(value);
-    if (total >= maxBytes) { try { await reader.cancel(); } catch { } break; }
+    if (total >= maxBytes) { try { await reader.cancel(); } catch {} break; }
   }
   const buf = new Uint8Array(Math.min(total, maxBytes));
   let off = 0;
@@ -156,7 +176,7 @@ export async function guardedFetch(startUrl, { deps, maxBytes = MAX_HTML_BYTES, 
         method: 'GET',
         redirect: 'manual',
         headers: { 'user-agent': UA, accept: 'text/html,application/xhtml+xml,*/*;q=0.8', 'accept-language': 'en' },
-        cache: 'no-store',
+        cache: 'no-store', // never answer from Cloudflare's cache: fresh response, no cache headers added
         signal: AbortSignal.timeout(timeoutMs)
       });
     } catch (e) { throw mapNetworkError(e); }
@@ -168,8 +188,7 @@ export async function guardedFetch(startUrl, { deps, maxBytes = MAX_HTML_BYTES, 
     }
     let body;
     try { body = await readCapped(res, maxBytes); } catch (e) { throw mapNetworkError(e); }
-    // return { url: checked, status: res.status, headers: res.headers, body, cnames: dnsInfo.cnames };
-    return { url: checked, status: res.status, headers: siteHeaders(res.headers, dnsInfo.ips), body, cnames: dnsInfo.cnames };
+    return { url: checked, status: res.status, headers: siteHeaders(res.headers, dnsInfo.ips), body, cnames: dnsInfo.cnames, ips: dnsInfo.ips };
   }
   throw new ScanError('fetch_failed', 'The site redirected too many times.');
 }
