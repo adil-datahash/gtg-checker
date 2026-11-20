@@ -104,13 +104,37 @@ async function readCapped(res, maxBytes) {
   return new TextDecoder('utf-8', { fatal: false }).decode(buf);
 }
 
-// The Worker runs on Cloudflare, so fetched responses can carry Cloudflare's own cf-* headers even when
-// the site is not on Cloudflare. A site really behind Cloudflare always answers "server: cloudflare".
-export function siteHeaders(headers) {
-  const server = headers.get('server') || '';
-  if (/cloudflare/i.test(server)) return headers;
+// Cloudflare's published address ranges (cloudflare.com/ips). A site really behind Cloudflare resolves into these.
+const CLOUDFLARE_V4 = ['173.245.48.0/20', '103.21.244.0/22', '103.22.200.0/22', '103.31.4.0/22', '141.101.64.0/18',
+  '108.162.192.0/18', '190.93.240.0/20', '188.114.96.0/20', '197.234.240.0/22', '198.41.128.0/17', '162.158.0.0/15',
+  '104.16.0.0/13', '104.24.0.0/14', '172.64.0.0/13', '131.0.72.0/22'];
+const CLOUDFLARE_V6 = ['2400:cb00:', '2606:4700:', '2803:f800:', '2405:b500:', '2405:8100:', '2a06:98c', '2c0f:f248:'];
+
+const v4num = (ip) => ip.split('.').reduce((n, o) => n * 256 + Number(o), 0);
+export function isCloudflareIp(ip) {
+  const s = String(ip).toLowerCase();
+  if (s.includes(':')) return CLOUDFLARE_V6.some((p) => s.startsWith(p));
+  const n = v4num(s);
+  return CLOUDFLARE_V4.some((cidr) => {
+    const [base, bits] = cidr.split('/');
+    const size = 2 ** (32 - Number(bits));
+    const start = v4num(base);
+    return n >= start && n < start + size;
+  });
+}
+
+// The Worker runs on Cloudflare, and Cloudflare rewrites every fetched response on the way in: it sets
+// "server: cloudflare" and can add cf-* headers, whatever the site sent. So those headers only count when
+// the site's own address is in Cloudflare's ranges. (Seen live: nginx.org arrived as "server: cloudflare".)
+export function siteHeaders(headers, ips = []) {
+  if (ips.some(isCloudflareIp)) return headers;
   const clean = new Headers();
-  for (const [k, v] of headers.entries()) if (!k.toLowerCase().startsWith('cf-')) clean.append(k, v);
+  for (const [k, v] of headers.entries()) {
+    const key = k.toLowerCase();
+    if (key.startsWith('cf-')) continue;
+    if (key === 'server' && /^cloudflare$/i.test(v.trim())) continue;
+    clean.append(k, v);
+  }
   return clean;
 }
 
@@ -145,7 +169,7 @@ export async function guardedFetch(startUrl, { deps, maxBytes = MAX_HTML_BYTES, 
     let body;
     try { body = await readCapped(res, maxBytes); } catch (e) { throw mapNetworkError(e); }
     // return { url: checked, status: res.status, headers: res.headers, body, cnames: dnsInfo.cnames };
-    return { url: checked, status: res.status, headers: siteHeaders(res.headers), body, cnames: dnsInfo.cnames };
+    return { url: checked, status: res.status, headers: siteHeaders(res.headers, dnsInfo.ips), body, cnames: dnsInfo.cnames };
   }
   throw new ScanError('fetch_failed', 'The site redirected too many times.');
 }
