@@ -43,10 +43,16 @@ export function isPrivateIp(ip) {
   }
   const p = s.split('.').map(Number);
   if (p.length !== 4 || p.some((n) => Number.isNaN(n) || n < 0 || n > 255)) return true;
-  const [a, b] = p;
+  // const [a, b] = p;
+  // return a === 0 || a === 10 || a === 127 || (a === 100 && b >= 64 && b <= 127) || (a === 169 && b === 254) ||
+  //   (a === 172 && b >= 16 && b <= 31) || (a === 192 && b === 168) || (a === 192 && b === 0) ||
+  //   (a === 198 && (b === 18 || b === 19)) || a >= 224;
+  const [a, b, c] = p;
   return a === 0 || a === 10 || a === 127 || (a === 100 && b >= 64 && b <= 127) || (a === 169 && b === 254) ||
-    (a === 172 && b >= 16 && b <= 31) || (a === 192 && b === 168) || (a === 192 && b === 0) ||
-    (a === 198 && (b === 18 || b === 19)) || a >= 224;
+    (a === 172 && b >= 16 && b <= 31) || (a === 192 && b === 168) ||
+    (a === 192 && b === 0 && (c === 0 || c === 2)) ||
+    (a === 198 && (b === 18 || b === 19)) || (a === 198 && b === 51 && c === 100) || (a === 203 && b === 0 && c === 113) ||
+    a >= 224;
 }
 
 async function doh(name, type, fetchImpl) {
@@ -85,7 +91,7 @@ async function readCapped(res, maxBytes) {
     if (done) break;
     total += value.byteLength;
     chunks.push(value);
-    if (total >= maxBytes) { try { await reader.cancel(); } catch {} break; }
+    if (total >= maxBytes) { try { await reader.cancel(); } catch { } break; }
   }
   const buf = new Uint8Array(Math.min(total, maxBytes));
   let off = 0;
@@ -96,6 +102,16 @@ async function readCapped(res, maxBytes) {
     if (off >= buf.length) break;
   }
   return new TextDecoder('utf-8', { fatal: false }).decode(buf);
+}
+
+// The Worker runs on Cloudflare, so fetched responses can carry Cloudflare's own cf-* headers even when
+// the site is not on Cloudflare. A site really behind Cloudflare always answers "server: cloudflare".
+export function siteHeaders(headers) {
+  const server = headers.get('server') || '';
+  if (/cloudflare/i.test(server)) return headers;
+  const clean = new Headers();
+  for (const [k, v] of headers.entries()) if (!k.toLowerCase().startsWith('cf-')) clean.append(k, v);
+  return clean;
 }
 
 function mapNetworkError(e) {
@@ -116,6 +132,7 @@ export async function guardedFetch(startUrl, { deps, maxBytes = MAX_HTML_BYTES, 
         method: 'GET',
         redirect: 'manual',
         headers: { 'user-agent': UA, accept: 'text/html,application/xhtml+xml,*/*;q=0.8', 'accept-language': 'en' },
+        cache: 'no-store',
         signal: AbortSignal.timeout(timeoutMs)
       });
     } catch (e) { throw mapNetworkError(e); }
@@ -127,7 +144,8 @@ export async function guardedFetch(startUrl, { deps, maxBytes = MAX_HTML_BYTES, 
     }
     let body;
     try { body = await readCapped(res, maxBytes); } catch (e) { throw mapNetworkError(e); }
-    return { url: checked, status: res.status, headers: res.headers, body, cnames: dnsInfo.cnames };
+    // return { url: checked, status: res.status, headers: res.headers, body, cnames: dnsInfo.cnames };
+    return { url: checked, status: res.status, headers: siteHeaders(res.headers), body, cnames: dnsInfo.cnames };
   }
   throw new ScanError('fetch_failed', 'The site redirected too many times.');
 }
