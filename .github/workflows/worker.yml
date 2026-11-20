@@ -1,0 +1,56 @@
+# Deploys the scanner API to Cloudflare Workers (free plan).
+# Needs: secrets CLOUDFLARE_API_TOKEN and CLOUDFLARE_ACCOUNT_ID, and an environment named "production"
+# (Settings > Environments). Add yourself as a required reviewer there so every deploy waits for your approval.
+name: Deploy scanner API (Cloudflare Worker)
+
+on:
+  push:
+    branches: [main]
+    paths: ['worker/**', 'engine/**', '.github/workflows/worker.yml']
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: worker
+  cancel-in-progress: false
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Engine tests
+        working-directory: engine
+        run: npm test
+      - name: Worker tests
+        working-directory: worker
+        run: |
+          npm ci
+          npm test
+
+  deploy:
+    needs: test
+    runs-on: ubuntu-latest
+    environment: production
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Deploy to Cloudflare
+        working-directory: worker
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          EXTRA_ORIGINS: ${{ vars.EXTRA_ALLOWED_ORIGINS }}
+        run: |
+          npm ci
+          # Only your github.io site (plus any extra origins you list) may call the API.
+          ORIGINS="https://${GITHUB_REPOSITORY_OWNER,,}.github.io"
+          if [ -n "$EXTRA_ORIGINS" ]; then ORIGINS="$ORIGINS,$EXTRA_ORIGINS"; fi
+          npx wrangler deploy --var "ALLOWED_ORIGINS:$ORIGINS"

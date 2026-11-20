@@ -1,0 +1,28 @@
+# Cloudflare Worker: the scanner API for the GitHub Pages site.
+name = "dh-gtg-checker-api"
+main = "src/index.js"
+compatibility_date = "2026-10-01"
+workers_dev = true
+send_metrics = false
+
+[vars]
+# The GitHub Actions deploy adds your github.io origin here automatically (--var ALLOWED_ORIGINS:...).
+ALLOWED_ORIGINS = "http://localhost:3000"
+# Kill switches. Change in the Cloudflare dashboard (Worker > Settings > Variables) to take effect at once.
+SCANNER_ENABLED = "true"
+LEADS_ENABLED = "true"
+# Dry run stays ON until the go-live approval: nothing reaches the CRM.
+LEADS_DRY_RUN = "true"
+SCAN_RATE_PER_MINUTE = "10"
+LEAD_RATE_PER_MINUTE = "5"
+
+# Secrets: set once in Cloudflare (dashboard, or `npx wrangler secret put NAME`), never in this repo.
+#   TURNSTILE_SECRET        bot check (pairs with the site key the Pages build uses)
+#   ZOHO_FLOW_WEBHOOK_URL   live lead destination
+#   DRY_RUN_WEBHOOK_URL     internal test webhook while in dry run (optional)
+
+# Optional, both free: a shared 24 h cache and a shared rate limit across Worker instances.
+# Uncomment after creating the KV namespace (`npx wrangler kv namespace create SCAN_CACHE`).
+# [[kv_namespaces]]
+# binding = "SCAN_CACHE"
+# id = "PASTE_ID_HERE"

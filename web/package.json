@@ -1,0 +1,16 @@
+{
+  "name": "dh-gtg-checker-web",
+  "version": "2.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "next dev",
+    "build": "next build",
+    "catalog": "node scripts/export-catalog.js"
+  },
+  "dependencies": {
+    "next": "15.5.29",
+    "react": "19.1.1",
+    "react-dom": "19.1.1"
+  }
+}

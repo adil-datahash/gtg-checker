@@ -1,0 +1,110 @@
+{
+  "total": 69,
+  "groups": [
+    {
+      "kind": "security",
+      "label": "Security proxy / WAF",
+      "names": [
+        "Sucuri",
+        "Imperva (Incapsula)",
+        "Reblaze",
+        "Myra Security",
+        "Radware Cloud WAF",
+        "DDoS-Guard",
+        "Qrator",
+        "F5 Distributed Cloud",
+        "Fortinet FortiWeb",
+        "Barracuda WAF"
+      ]
+    },
+    {
+      "kind": "cdn",
+      "label": "CDN",
+      "names": [
+        "Cloudflare",
+        "Akamai",
+        "Fastly",
+        "Amazon CloudFront",
+        "Azure Front Door",
+        "Azure CDN",
+        "Bunny CDN",
+        "KeyCDN",
+        "Gcore",
+        "CDN77",
+        "CacheFly",
+        "Medianova",
+        "CDNetworks / Wangsu",
+        "Tencent Cloud (EdgeOne / CDN)",
+        "Alibaba Cloud CDN",
+        "Huawei Cloud CDN",
+        "Edgio / Edgecast (discontinued)",
+        "StackPath / Highwinds (discontinued)",
+        "QUIC.cloud",
+        "Section",
+        "Hostinger CDN"
+      ]
+    },
+    {
+      "kind": "managed",
+      "label": "Managed hosting",
+      "names": [
+        "Kinsta",
+        "WP Engine",
+        "Pantheon",
+        "Acquia",
+        "WordPress VIP",
+        "Cloudways",
+        "Firebase Hosting",
+        "GitHub Pages"
+      ]
+    },
+    {
+      "kind": "lb",
+      "label": "Load balancer",
+      "names": [
+        "Google Cloud Load Balancer / Cloud CDN",
+        "AWS Elastic Load Balancer",
+        "Azure Application Gateway",
+        "F5 BIG-IP",
+        "Citrix ADC / NetScaler"
+      ]
+    },
+    {
+      "kind": "paas",
+      "label": "App hosting",
+      "names": [
+        "Vercel",
+        "Netlify",
+        "AWS Amplify Hosting",
+        "Google Cloud Run / App Engine",
+        "Heroku",
+        "Render",
+        "Fly.io",
+        "DigitalOcean App Platform",
+        "Azure App Service",
+        "Amazon S3 website"
+      ]
+    },
+    {
+      "kind": "origin",
+      "label": "Web server",
+      "names": [
+        "Varnish",
+        "Nginx",
+        "OpenResty (Nginx)",
+        "Tengine (Nginx)",
+        "Apache",
+        "Microsoft IIS",
+        "LiteSpeed",
+        "Caddy",
+        "Envoy",
+        "HAProxy",
+        "Traefik",
+        "Apache Tomcat / Java server",
+        "Node.js (Express)",
+        "Kestrel (.NET)",
+        "Gunicorn / Python"
+      ]
+    }
+  ]
+}

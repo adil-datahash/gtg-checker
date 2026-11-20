@@ -1,0 +1,39 @@
+# Runs on every pull request and every push to main: all tests, the Worker bundle check and the website build.
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  test-and-build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Engine tests (detection rules)
+        working-directory: engine
+        run: npm test
+
+      - name: Worker tests and bundle check
+        working-directory: worker
+        run: |
+          npm ci
+          npm test
+          npx wrangler deploy --dry-run --outdir dist
+
+      - name: Website build (static export)
+        working-directory: web
+        env:
+          NEXT_PUBLIC_API_BASE: https://api.example.invalid
+        run: |
+          npm ci
+          npx next build

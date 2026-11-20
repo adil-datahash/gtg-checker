@@ -1,0 +1,9 @@
+node_modules/
+web/.next/
+web/out/
+worker/dist/
+worker/.wrangler/
+.env
+.env*.local
+worker/.dev.vars
+.DS_Store

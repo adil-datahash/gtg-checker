@@ -1,0 +1,7 @@
+{
+  "name": "dh-gtg-engine",
+  "private": true,
+  "type": "module",
+  "description": "GTG detection rules shared by the Worker. Pure JavaScript, no runtime APIs.",
+  "scripts": { "test": "node --test test/*.test.js" }
+}
