@@ -39,7 +39,7 @@ function safeUrl(raw, base) {
 
 // The directory a first-party loader lives under: "/abc123/gtm.js" -> "/abc123/", "/abc123/" -> "/abc123/".
 function loaderDir(pathname) {
-  let p = pathname.replace(/\/gtag\/js$/, '/').replace(/\/gtm\.js$/, '/');
+  let p = pathname.replace(/\/gtag\/(js|destination)$/, '/').replace(/\/gtm\.js$/, '/');
   if (!p.endsWith('/')) p = p.slice(0, p.lastIndexOf('/') + 1);
   return p || '/';
 }
@@ -57,8 +57,14 @@ export function classifyLoader(rawUrl, pageUrl, idHint) {
     if (u.pathname.endsWith('/ns.html')) return null; // noscript iframe, not a loader
     return { url: u.href, id, kind: id ? idKind(id) : 'unknown', serving: 'google', host, path: null };
   }
-  if (!id || !/^(GTM-|G-|AW-|DC-|GT-)/.test(id)) return null; // not a Google tag loader
   const sameHost = host === page.hostname.toLowerCase();
+  // A loader on the site's own domain whose ID is not in the URL (some gateways and tag managers load
+  // /<path>/gtag/js without ?id=). Only a browser sees these; the /healthy check confirms them.
+  if (!id && sameHost && looksGoogleLoader) {
+    const path = loaderDir(u.pathname);
+    return { url: u.href, id: '', kind: 'unknown', serving: path === '/' ? 'first_party_root' : 'first_party_path', host, path };
+  }
+  if (!id || !/^(GTM-|G-|AW-|DC-|GT-)/.test(id)) return null; // not a Google tag loader
   const sameSite = registrableDomain(host) === registrableDomain(page.hostname);
   if (sameHost) {
     const path = loaderDir(u.pathname);
@@ -72,8 +78,9 @@ export function classifyLoader(rawUrl, pageUrl, idHint) {
   return null;
 }
 
-export function extractTags(html, pageUrl, browserRequests = []) {
-  const text = String(html || '');
+export function extractTags(html, pageUrl, browserRequests = [], extraIds = []) {
+  // Tag IDs a browser saw running (window.google_tag_manager) count like IDs written in the page.
+  const text = String(html || '') + (extraIds.length ? `\n${extraIds.join(' ')}` : '');
   const loaders = [];
 
   // 0. Tag requests a real browser made while loading the page (scripts that add GTM after load).
@@ -330,6 +337,103 @@ export function recommendRoute(infra, platform) {
   return { key: 'unknown', label: 'Not identified', effort: 'Unknown', note: 'We could not identify what sits in front of your site. Most setups are still possible once we know.', eligible: 'conditional' };
 }
 
+// ---------- Tag managers and the in-page probe ----------
+
+const TAG_MANAGER_HTML = [
+  { name: 'Google Tag Manager', re: /googletagmanager\.com\/gtm\.js|\/gtm\.js\?id=GTM-|['"]GTM-[A-Z0-9]{4,10}['"]/i },
+  { name: 'Tealium iQ', re: /tags\.tiqcdn\.com|\/utag\.js|utag_data/i },
+  { name: 'Adobe Experience Platform Tags (Launch)', re: /assets\.adobedtm\.com/i },
+  { name: 'Segment', re: /cdn\.segment\.com\/analytics\.js/i },
+  { name: 'Ensighten', re: /nexus\.ensighten\.com/i },
+  { name: 'Commanders Act', re: /tagcommander\.com|cdn\.commander1\.com/i },
+  { name: 'Cloudflare Zaraz', re: /\/cdn-cgi\/zaraz\//i },
+  { name: 'Piwik PRO Tag Manager', re: /\.piwik\.pro\/|containers\.piwik\.pro/i },
+  { name: 'Matomo Tag Manager', re: /_mtm\.push|matomo\.cloud\/container_/i },
+  { name: 'Signal', re: /s\.btstatic\.com|s\.thebrighttag\.com/i }
+];
+
+export function detectTagManagers(html) {
+  const text = String(html || '').slice(0, 600_000);
+  return TAG_MANAGER_HTML.filter((t) => t.re.test(text)).map((t) => t.name);
+}
+
+const PROBE_TAG_ID = /^(GTM-[A-Z0-9]{4,10}|G-[A-Z0-9]{6,12}|AW-\d{6,12}|DC-\d{6,12}|GT-[A-Z0-9]{6,12})$/;
+const str = (v, n) => (typeof v === 'string' ? v.slice(0, n) : '');
+const bool = (v) => v === true;
+const arr = (v, n) => (Array.isArray(v) ? v.slice(0, n) : []);
+
+// Checks and trims a probe result. A visitor's browser can send anything, so only known fields of the
+// expected types survive, and the page must belong to the site being checked.
+export function normalizeProbe(raw, siteHost, source) {
+  if (!raw || typeof raw !== 'object' || raw.v !== 1 || raw.error) return null;
+  const host = str(raw.host, 253).toLowerCase();
+  if (!host || registrableDomain(host) !== registrableDomain(siteHost)) return null;
+  const okUrl = (u) => { try { const x = new URL(u); return /^https?:$/.test(x.protocol) ? x.href.slice(0, 300) : ''; } catch { return ''; } };
+  const loaders = arr(raw.loaders, 40).map((l) => {
+    const url = okUrl(l && l.url);
+    if (!url) return null;
+    const u = new URL(url);
+    const id = str(l.id, 20).toUpperCase();
+    return { url, host: u.hostname, path: u.pathname, id: PROBE_TAG_ID.test(id) ? id : '', sameHost: u.hostname === host, afterConsent: bool(l.afterConsent) };
+  }).filter(Boolean);
+  const measurement = arr(raw.measurement, 40).map((m) => (m && typeof m === 'object' ? {
+    host: str(m.host, 253).toLowerCase(), path: str(m.path, 80), sameHost: str(m.host, 253).toLowerCase() === host,
+    id: PROBE_TAG_ID.test(str(m.id, 20).toUpperCase()) ? str(m.id, 20).toUpperCase() : '', gcs: /^G[0-9]{3}$/.test(str(m.gcs, 8)) ? m.gcs : '',
+    count: Math.min(Number(m.count) || 0, 9999)
+  } : null)).filter((m) => m && m.host);
+  const checks = arr(raw.checks, 3).map((c) => {
+    if (!c || typeof c !== 'object' || !/^\/[A-Za-z0-9._~\-/%]{1,120}\/$/.test(str(c.path, 130))) return null;
+    const headers = {};
+    if (c.headers && typeof c.headers === 'object') for (const [k, v] of Object.entries(c.headers).slice(0, 25)) if (/^[a-z0-9-]{1,40}$/.test(k)) headers[k] = str(v, 80);
+    return { path: c.path, healthStatus: Math.min(Number(c.healthStatus) || 0, 999), healthy: bool(c.healthy), loaderStatus: Math.min(Number(c.loaderStatus) || 0, 999), servesGoogleJs: bool(c.servesGoogleJs), headers };
+  }).filter(Boolean);
+  const consent = raw.consent && typeof raw.consent === 'object' ? raw.consent : {};
+  const action = consent.action && typeof consent.action === 'object' ? { method: str(consent.action.method, 20), by: str(consent.action.by, 80) } : null;
+  const consentMode = arr(consent.consentMode, 8).map((c) => {
+    if (!c || (c.type !== 'default' && c.type !== 'update') || !c.state || typeof c.state !== 'object') return null;
+    const state = {};
+    for (const k of ['ad_storage', 'analytics_storage', 'ad_user_data', 'ad_personalization']) if (/^(granted|denied)$/.test(c.state[k])) state[k] = c.state[k];
+    return { type: c.type, state };
+  }).filter(Boolean);
+  return {
+    source: source === 'visitor_browser' ? 'visitor_browser' : 'browser_run',
+    host,
+    title: str(raw.title, 120),
+    resources: Math.min(Number(raw.resources) || 0, 100000),
+    loaders,
+    measurement,
+    ids: arr(raw.ids, 20).map((i) => str(i, 20).toUpperCase()).filter((i) => PROBE_TAG_ID.test(i)),
+    tagManagers: arr(raw.tagManagers, 12).map((t) => str(t, 60)).filter(Boolean),
+    consent: { cmp: str(consent.cmp, 40) || null, requested: bool(consent.requested), action, consentMode },
+    checks
+  };
+}
+
+// Consent findings in plain terms.
+function describeConsent(probe, tags) {
+  if (!probe) return null;
+  const c = probe.consent;
+  const def = c.consentMode.find((x) => x.type === 'default');
+  // Advanced consent mode: Google tags load before consent and send cookieless pings.
+  // Basic: Google tags wait until the visitor accepts.
+  const loadedBeforeConsent = probe.loaders.some((l) => !l.afterConsent);
+  const mode = !def ? 'not_found'
+    : !Object.values(def.state).some((v) => v === 'denied') ? 'granted_by_default'
+    : !c.requested || !c.action || c.action.method === 'none_found' ? 'denied_by_default'
+    : loadedBeforeConsent ? 'advanced' : 'basic';
+  const afterConsent = probe.loaders.filter((l) => l.afterConsent).map((l) => l.id || l.path);
+  return {
+    banner: c.cmp,
+    accepted: c.requested ? (c.action && c.action.method !== 'none_found' ? 'yes' : 'no_banner_found') : 'not_requested',
+    acceptedBy: c.action && c.action.method !== 'none_found' ? c.action.method : null,
+    consentMode: mode,
+    defaultState: def ? def.state : null,
+    tagsOnlyAfterConsent: uniq(afterConsent).slice(0, 10),
+    gcs: uniq(probe.measurement.map((m) => m.gcs).filter(Boolean)).slice(0, 4),
+    googleTagsSeen: tags.loaders.length
+  };
+}
+
 // ---------- Final verdict ----------
 
 export function decide({ tags, probes = {}, blocked, browser = null }) {
@@ -411,12 +515,29 @@ export function describeGtgDeployment(verdict, probes, siteInfra) {
 
 // One call that builds the complete report from collected evidence.
 export function buildReport(evidence) {
-  const { inputUrl, finalUrl, status, headers, html, cnames = [], assetHosts = [], probes = {}, scannedAt, browser = null, network = null } = evidence;
-  const tags = extractTags(html, finalUrl, browser && browser.ran ? browser.tagRequests : []);
+  const { inputUrl, finalUrl, status, headers, html, cnames = [], assetHosts = [], probes: serverProbes = {}, scannedAt, browser = null, network = null } = evidence;
+  const pageProbe = evidence.pageProbe || (browser && browser.probe) || null;
+  const probeRequests = pageProbe ? pageProbe.loaders.map((l) => l.url) : [];
+  const tags = extractTags(html, finalUrl, [...(browser && browser.ran ? browser.tagRequests || [] : []), ...probeRequests], pageProbe ? pageProbe.ids : []);
+  for (const l of tags.loaders) {
+    const p = pageProbe && pageProbe.loaders.find((x) => x.url === l.url);
+    if (p) { l.source = pageProbe.source; l.afterConsent = p.afterConsent; }
+  }
+  // Health checks: the server's own, and those run inside the page (which pass a firewall that blocks the server).
+  const probes = { ...serverProbes };
+  for (const c of pageProbe ? pageProbe.checks : []) {
+    if (probes[c.path] && probes[c.path].healthy) continue;
+    probes[c.path] = { path: c.path, healthy: c.healthy, healthBody: c.healthy ? 'ok' : `HTTP ${c.healthStatus}`, servesGoogleJs: c.servesGoogleJs, headers: c.headers, checkedIn: pageProbe.source };
+  }
   const infra = fingerprintInfra(headers, cnames, assetHosts, network);
   const platform = detectPlatform(headers, html);
-  const blocked = detectBlock(status, headers, html);
-  const verdict = decide({ tags, probes, blocked, browser });
+  const serverBlocked = detectBlock(status, headers, html);
+  // A real browser loaded the page, so the firewall only stopped our server, not the answer.
+  const probeLoadedPage = Boolean(pageProbe && (pageProbe.resources > 2 || pageProbe.loaders.length));
+  const blocked = serverBlocked && !probeLoadedPage ? serverBlocked : null;
+  const verdict = decide({ tags, probes, blocked, browser: browser || (pageProbe ? { ran: true } : null) });
+  const tagManagers = uniq([...detectTagManagers(html), ...(pageProbe ? pageProbe.tagManagers : [])]);
+  const consent = describeConsent(pageProbe, tags);
   const route = recommendRoute(infra, platform);
   const host = new URL(finalUrl).hostname;
   const gtg = describeGtgDeployment(verdict, probes, infra);
@@ -431,6 +552,9 @@ export function buildReport(evidence) {
       : 'The tag is added by a script after the page loads, and the browser check could not run.';
     warnings.push({ code: 'dynamic', text: `A Google tag ID is on the page, but we could not see where the tag loads from. ${why}` });
   }
+  if (serverBlocked && !blocked) warnings.push({ code: 'server_blocked', text: `Your site's security layer blocks automated checks (${serverBlocked}), so we checked it in a real browser instead.` });
+  if (consent && consent.tagsOnlyAfterConsent.length) warnings.push({ code: 'after_consent', text: 'Some Google tags load only after a visitor accepts cookies. We accepted the cookie banner to see them.' });
+  if (tagManagers.some((t) => t !== 'Google Tag Manager') && ['implemented', 'partial', 'not_implemented'].includes(verdict.status)) warnings.push({ code: 'tag_manager', text: `Your Google tags are managed in ${tagManagers.filter((t) => t !== 'Google Tag Manager').join(', ')}. Gateway changes to tag paths are made there, as well as on your CDN.` });
   if (tags.loaders.some((l) => l.source === 'browser_network')) warnings.push({ code: 'found_in_browser', text: 'Your Google tag is added by a script after the page loads. We found where it loads from by loading the page in a browser.' });
   if (infra.proxyType === 'asset_only_cdn') warnings.push({ code: 'asset_only', text: 'Your CDN only serves static files from a subdomain. Your main domain is answered by the web server directly.' });
   if (gtg && gtg.differsFromSite) warnings.push({ code: 'split_edge', text: `The gateway path and the rest of your site go through different providers (${gtg.servedBy} and ${gtg.sitePrimary}). That works, but both need to stay in step when either changes.` });
@@ -448,7 +572,15 @@ export function buildReport(evidence) {
     platform,
     route,
     gtg,
-    browserCheck: browser ? { ran: Boolean(browser.ran), tagRequestsSeen: (browser.tagRequests || []).length, error: browser.error || null } : null,
+    browserCheck: browser || pageProbe ? {
+      ran: Boolean((browser && browser.ran) || pageProbe),
+      by: pageProbe ? pageProbe.source : 'browser_run',
+      tagRequestsSeen: (browser && browser.tagRequests ? browser.tagRequests.length : 0) + probeRequests.length,
+      error: browser && browser.error ? browser.error : null
+    } : null,
+    checkedBy: pageProbe ? pageProbe.source : 'server',
+    tagManagers,
+    consent,
     // Raw probe headers stay on the server; only the results leave it.
     probes: Object.fromEntries(Object.entries(probes).map(([k, p]) => [k, { path: p.path, healthy: p.healthy, healthBody: p.healthBody, servesGoogleJs: p.servesGoogleJs }])),
     warnings
@@ -471,6 +603,10 @@ export function freeSummary(report) {
     tagCount: report.tags.gtm.length + report.tags.ga4.length + report.tags.ads.length,
     issueCount: report.warnings.length,
     blockedReason: report.verdict.status === 'blocked' ? report.verdict.reason : null,
-    unconfirmedReason: report.verdict.status === 'unconfirmed' ? report.verdict.reason : null
+    unconfirmedReason: report.verdict.status === 'unconfirmed' ? report.verdict.reason : null,
+    checkedBy: report.checkedBy || 'server',
+    browserBlocked: Boolean(report.browserCheck && report.browserCheck.error === 'browser_blocked'),
+    tagManagers: report.tagManagers || [],
+    consentBanner: report.consent ? report.consent.banner : null
   };
 }

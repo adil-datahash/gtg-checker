@@ -15,5 +15,19 @@ async function post(path, body) {
   return data;
 }
 
-export const scanSite = (url, turnstileToken) => post('/api/scan', { url, turnstileToken });
-export const submitLead = ({ url, lead, utm }) => post('/api/lead', { url, ...lead, utm, page: window.location.href });
+// probe: a result from the "check from your browser" script, sent only when the visitor ran it.
+export const scanSite = (url, turnstileToken, probe) => post('/api/scan', { url, turnstileToken, ...(probe ? { probe } : {}) });
+export const submitLead = ({ url, lead, utm, probe }) => post('/api/lead', { url, ...lead, utm, page: window.location.href, ...(probe ? { probe } : {}) });
+
+// Reads a result the browser check put after #probe= in the address, then removes it from the address bar.
+export function takeProbeFromHash() {
+  try {
+    const m = window.location.hash.match(/^#probe=([A-Za-z0-9_-]+)$/);
+    if (!m) return null;
+    history.replaceState(null, '', window.location.pathname + window.location.search);
+    const b64 = m[1].replace(/-/g, '+').replace(/_/g, '/');
+    const json = decodeURIComponent(escape(atob(b64 + '='.repeat((4 - (b64.length % 4)) % 4))));
+    const probe = JSON.parse(json);
+    return probe && probe.v === 1 && typeof probe.host === 'string' ? probe : null;
+  } catch { return null; }
+}

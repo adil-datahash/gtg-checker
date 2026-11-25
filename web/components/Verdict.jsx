@@ -2,6 +2,11 @@
 
 import { verdictCopy, ELIGIBILITY } from '@/lib/client/copy.js';
 
+const CHECKED_BY = {
+  browser_run: 'Checked in a real browser, with the cookie banner accepted.',
+  visitor_browser: 'Checked in your own browser with the browser check.'
+};
+
 export default function Verdict({ summary, onReset }) {
   const v = verdictCopy(summary);
   const elig = ELIGIBILITY[summary.eligible];
@@ -12,6 +17,7 @@ export default function Verdict({ summary, onReset }) {
         <p className="verdict-site mono">{summary.host}</p>
         <h2>{v.title}</h2>
         <p className="verdict-body">{v.body}</p>
+        {CHECKED_BY[summary.checkedBy] ? <p className="checked-by">{CHECKED_BY[summary.checkedBy]}</p> : null}
       </div>
       <dl className="facts">
         {summary.gtgServedBy ? (
@@ -38,6 +44,18 @@ export default function Verdict({ summary, onReset }) {
           <div>
             <dt>Gateway setup</dt>
             <dd className={`elig elig-${summary.eligible}`}>{elig.label}</dd>
+          </div>
+        ) : null}
+        {summary.tagManagers?.length ? (
+          <div>
+            <dt>Tag manager</dt>
+            <dd>{summary.tagManagers.join(', ')}</dd>
+          </div>
+        ) : null}
+        {summary.consentBanner ? (
+          <div>
+            <dt>Cookie banner</dt>
+            <dd>{summary.consentBanner}</dd>
           </div>
         ) : null}
         <div>

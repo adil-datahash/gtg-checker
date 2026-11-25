@@ -12,6 +12,7 @@ const DNS = {
   'spa-site.com': { a: '76.76.21.21' },
   'internal.example.com': { a: '10.0.0.5' },
   'rebind.example.com': { a: '169.254.169.254' },
+  'fortress-shop.com': { a: '23.2.2.2', cname: 'fortress-shop.com.edgekey.net.' }, 'walled-shop.com': { a: '23.2.2.3' },
   'nginx-site.org': { a: '3.125.197.172' }, 'vip-site.com': { a: '192.0.66.32' }, 'gcore-site.com': { a: '92.223.116.254' }
 };
 const SITES = {
@@ -23,10 +24,23 @@ const SITES = {
   // A non-Cloudflare site whose response picked up Cloudflare's cf-* headers on the way to the Worker.
   'https://nginx-site.org/': { body: page('<p>no tags</p>'), headers: { server: 'cloudflare', 'cf-cache-status': 'MISS', 'cf-ray': 'abc-FRA', 'x-frame-options': 'DENY' } },
   'https://gcore-site.com/': { body: page(GTM_STANDARD), headers: { server: 'cloudflare' } },
+  // Akamai bot protection: the server only ever gets "Access Denied".
+  'https://fortress-shop.com/': { status: 403, body: '<html><head><title>Access Denied</title></head><body>Access Denied. Reference #18.1</body></html>', headers: { server: 'AkamaiGHost' } },
+  'https://fortress-shop.com/metrics/healthy': { status: 403, body: 'Access Denied', headers: { server: 'AkamaiGHost' } },
+  'https://walled-shop.com/': { status: 403, body: '<html><head><title>Access Denied</title></head><body>Access Denied</body></html>', headers: { server: 'AkamaiGHost' } },
   'https://spa-site.com/m9x/healthy': { body: 'ok', headers: { 'x-vercel-id': 'bom1::h' } },
   'https://spa-site.com/m9x/?id=GTM-SPA1234': { body: 'window.google_tag_manager={}', headers: { 'x-vercel-id': 'bom1::j' } },
   'https://vip-site.com/': { body: page(GTM_STANDARD), headers: { server: 'nginx', 'x-ac': '1.bom _dca MISS' } },
   'https://spa-site.com/': { body: page('<script>window.c={gtm:"GTM-SPA1234"}</script>'), headers: { 'x-vercel-id': 'bom1::x', server: 'Vercel' } }
+};
+
+// What the in-page probe reports on a Tealium + OneTrust shop with a gateway at /metrics/.
+const FORTRESS_PROBE = {
+  v: 1, mode: 'server', url: 'https://fortress-shop.com/', host: 'fortress-shop.com', title: 'Shop', resources: 150,
+  loaders: [{ url: 'https://fortress-shop.com/metrics/gtag/js?id=G-FORT123456', host: 'fortress-shop.com', path: '/metrics/gtag/js', id: 'G-FORT123456', sameHost: true, afterConsent: true }],
+  measurement: [], ids: ['G-FORT123456'], tagManagers: ['Tealium iQ'],
+  consent: { cmp: 'OneTrust', requested: true, action: { method: 'button', by: '#onetrust-accept-btn-handler' }, consentMode: [{ type: 'default', state: { ad_storage: 'denied', analytics_storage: 'denied' } }] },
+  checks: [{ path: '/metrics/', healthStatus: 200, healthy: true, loaderStatus: 200, servesGoogleJs: true, headers: { server: 'AkamaiGHost', 'akamai-cache-status': 'Miss from child' } }]
 };
 
 function fakeFetch(log = []) {
@@ -56,6 +70,13 @@ function fakeFetch(log = []) {
     }
     if (u.includes('/browser-rendering/content')) {
       const target = JSON.parse(init.body).url;
+      if (target.startsWith('https://fortress-shop.com')) {
+        const probe = JSON.stringify(FORTRESS_PROBE).replace(/</g, '\\u003c');
+        return Response.json({ success: true, meta: { status: 200 }, result: `<html><head></head><body>shop<script type="application/json" id="dh-gtg-probe">${probe}</script></body></html>` });
+      }
+      if (target.startsWith('https://walled-shop.com')) {
+        return Response.json({ success: true, meta: { status: 403 }, result: '<html><body>Access Denied</body></html>' });
+      }
       if (target.startsWith('https://spa-site.com')) {
         return Response.json({ success: true, result: '<html><head><script async src="/m9x/?id=GTM-SPA1234"></script></head><body></body></html>' });
       }
@@ -271,4 +292,45 @@ test('browser limit reached or not configured -> falls back quietly', async () =
 test('tag loaders are read from rendered HTML', () => {
   const html = '<script src="https://www.googletagmanager.com/gtm.js?id=GTM-ABC1234"></script><script src="/app.js"></script><script src="/k7/?id=G-ABCDEF1234&amp;l=dl"></script>';
   assert.deepEqual(tagRequestsFromHtml(html, 'https://shop.com/'), ['https://www.googletagmanager.com/gtm.js?id=GTM-ABC1234', 'https://shop.com/k7/?id=G-ABCDEF1234&l=dl']);
+});
+
+// ---------- in-page probe: blocked sites, tag managers, consent ----------
+
+let clock2 = 100_000_000; // later than any clock used above, so the 10-second spacing never trips
+const tick2 = () => (clock2 += 20_000);
+
+test('server blocked by Akamai: Browser Run probe accepts consent and confirms the gateway from inside the page', async () => {
+  const f = fakeFetch();
+  const r = await runScan('fortress-shop.com', { ...makeDeps(f), browserScan: (u) => browserTagRequests(u, BENV, f, tick2) });
+  assert.equal(r.verdict.status, 'implemented');
+  assert.equal(r.verdict.confidence, 'verified');
+  assert.equal(r.checkedBy, 'browser_run');
+  assert.equal(r.consent.banner, 'OneTrust');
+  assert.equal(r.consent.consentMode, 'basic');
+  assert.deepEqual(r.consent.tagsOnlyAfterConsent, ['G-FORT123456']);
+  assert.ok(r.tagManagers.includes('Tealium iQ'));
+  assert.equal(r.gtg.servedBy, 'Akamai');
+  assert.ok(r.warnings.some((w) => w.code === 'server_blocked'));
+});
+
+test('Browser Run blocked too: stays "blocked" and says so, so the page can offer the visitor check', async () => {
+  const f = fakeFetch();
+  const r = await runScan('walled-shop.com', { ...makeDeps(f), browserScan: (u) => browserTagRequests(u, BENV, f, tick2) });
+  assert.equal(r.verdict.status, 'blocked');
+  assert.equal(r.browserCheck.error, 'browser_blocked');
+});
+
+test('visitor browser result: accepted for the same site, never cached, refused for another site', async () => {
+  const h = makeHandler({ fetchImpl: fakeFetch() });
+  const probe = { ...FORTRESS_PROBE, mode: 'visitor' };
+  const a = await (await h(req('/api/scan', { url: 'fortress-shop.com', probe }, { ip: '8.8.1.1' }), ENV)).json();
+  assert.equal(a.summary.status, 'implemented');
+  assert.equal(a.summary.checkedBy, 'visitor_browser');
+  assert.equal(a.cached, false);
+  const b = await h(req('/api/scan', { url: 'walled-shop.com', probe }, { ip: '8.8.1.2' }), ENV);
+  assert.equal(b.status, 422);
+  assert.equal((await b.json()).error, 'bad_probe');
+  // The visitor's result did not land in the shared cache: a plain scan of the same site is still blocked.
+  const c = await (await h(req('/api/scan', { url: 'fortress-shop.com' }, { ip: '8.8.1.3' }), ENV)).json();
+  assert.equal(c.summary.status, 'blocked');
 });

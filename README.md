@@ -18,8 +18,8 @@ Why two parts: a page on github.io runs in the visitor's browser, and browsers d
 website's response or headers (CORS). The scan has to come from a server; the Worker is that server.
 
 ```
-engine/    detection rules: 69 providers, verdict, gateway deployment, lead grading (pure JS, 130 tests)
-worker/    Cloudflare Worker API (12 tests)
+engine/    detection rules: 70 providers, in-page probe, verdict, gateway deployment, lead grading (pure JS, 153 tests)
+worker/    Cloudflare Worker API (25 tests)
 web/       Next.js site, exported as static files for GitHub Pages
 .github/workflows/
   ci.yml      every push and pull request: all tests, Worker bundle check, site build
@@ -79,8 +79,10 @@ Sites that add their Google tag with a script need a real browser. The Worker us
 2. Cloudflare > Workers & Pages > dh-gtg-checker-api > Settings > Variables and Secrets > Add: type **Secret**,
    name `BROWSER_API_TOKEN`, value = the token.
 3. Re-run the Worker deploy (it sets `BROWSER_ACCOUNT_ID` itself).
-Free plan: 10 minutes of browser time a day and one browser request every 10 seconds. The check runs only when the
-page HTML cannot settle the answer; when the allowance is used up, the result stays "could not confirm".
+Free plan: 10 minutes of browser time a day and one browser request every 10 seconds (each check takes about
+20 seconds, so roughly 25 browser checks a day). The check runs only when the page HTML cannot settle the answer:
+no tags seen, a tag added by a script, a site that blocks our server, or tags run by Tealium, Adobe Launch and
+similar. When the allowance is used up, the result keeps what the plain scan found.
 Switch it off with `BROWSER_CHECK = "false"` in `worker/wrangler.toml`.
 
 ### Optional settings
@@ -128,8 +130,18 @@ A dashboard change is overwritten by the next Worker deploy, so also change the 
    headers and CNAMEs, the scanner looks up **which network owns the site's address** (Team Cymru's free
    IP-to-ASN lookup over DNS). That recognises Gcore, Qrator, Fastly, Akamai, Bunny, Sucuri, Imperva and others
    even when headers are hidden, and shows "Hosted on Amazon Web Services / DigitalOcean / …" when no CDN is in front.
-5. When the HTML alone cannot settle it, Cloudflare Browser Run renders the page and the scanner reads the tag
-   loaders the scripts added; any first-party path then gets the `/healthy` check.
+5. When the HTML alone cannot settle it, Cloudflare Browser Run loads the page and runs the **in-page probe**
+   (`engine/probe.js`) inside it. The probe accepts the cookie banner (OneTrust, Cookiebot, Didomi, Usercentrics,
+   TrustArc, Tealium Consent Manager and others, or a visible "Accept all" button), records every Google tag request
+   whatever loaded it (GTM, gtag.js, Tealium, Adobe Launch, Segment, Zaraz...), reads Google Consent Mode, and calls
+   `/<path>/healthy` from inside the page.
+6. If the site blocks Browser Run as well (strong bot protection: Akamai, Qrator, Myra...), the result page offers
+   **Check from your browser**: the same probe as a bookmark button or a console snippet. The visitor runs it on their
+   own site, chooses whether it may accept cookies, and sends the result back with "See the full report". Results from
+   a visitor's browser are checked (`normalizeProbe`), must come from the same site, and are never cached.
+
+After changing `engine/probe.js`, run `cd web && npm run catalog`: it rewrites `web/lib/client/probe.json`, the
+script the website hands to visitors.
 
 **Cloudflare rewrites headers.** Responses the Worker fetches arrive with `server: cloudflare` whatever the site
 sent. So Cloudflare headers count only when the site's address is in Cloudflare's published ranges, and the real

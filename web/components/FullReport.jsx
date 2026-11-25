@@ -1,6 +1,6 @@
 'use client';
 
-import { BOOKING_URL, PROXY_TYPE, ELIGIBILITY, nextStep } from '@/lib/client/copy.js';
+import { BOOKING_URL, PROXY_TYPE, ELIGIBILITY, CONSENT_MODE, nextStep } from '@/lib/client/copy.js';
 import { track } from '@/lib/client/track.js';
 
 const SERVING = {
@@ -79,18 +79,37 @@ export default function FullReport({ report, dryRun }) {
           {report.tags.loaders.length ? (
             <div className="table-wrap">
               <table>
-                <thead><tr><th scope="col">Tag</th><th scope="col">Loads</th></tr></thead>
+                <thead><tr><th scope="col">Tag</th><th scope="col">Loads</th>{report.consent ? <th scope="col">When</th> : null}</tr></thead>
                 <tbody>
                   {report.tags.loaders.map((l) => (
-                    <tr key={`${l.id}-${l.serving}-${l.path}`}>
-                      <td><code>{l.id}</code></td>
+                    <tr key={`${l.id}-${l.serving}-${l.path}-${l.host}`}>
+                      <td>{l.id ? <code>{l.id}</code> : 'Google tag'}</td>
                       <td>{SERVING[l.serving] || l.serving}{l.path ? <> <code>{l.path}</code></> : null}</td>
+                      {report.consent ? <td>{l.afterConsent ? 'After cookies were accepted' : 'On page load'}</td> : null}
                     </tr>
                   ))}
                 </tbody>
               </table>
             </div>
           ) : null}
+        </div>
+      ) : null}
+
+      {report.tagManagers?.length || report.consent ? (
+        <div className="report-block">
+          <h3>Tag management and consent</h3>
+          <dl className="kv">
+            <div><dt>Tag manager</dt><dd>{report.tagManagers?.length ? report.tagManagers.join(', ') : 'None found'}</dd></div>
+            {report.consent ? (
+              <>
+                <div><dt>Cookie banner</dt><dd>{report.consent.banner || 'None found'}</dd></div>
+                <div><dt>Cookies accepted for the check</dt><dd>{report.consent.accepted === 'yes' ? 'Yes' : report.consent.accepted === 'no_banner_found' ? 'No banner to accept' : 'No (you chose not to)'}</dd></div>
+                <div><dt>Google Consent Mode</dt><dd>{CONSENT_MODE[report.consent.consentMode] || 'Not found on this page'}</dd></div>
+                {report.consent.tagsOnlyAfterConsent?.length ? <div><dt>Load only after consent</dt><dd>{report.consent.tagsOnlyAfterConsent.map((t) => <code key={t}>{t}</code>)}</dd></div> : null}
+              </>
+            ) : null}
+            <div><dt>Checked with</dt><dd>{report.checkedBy === 'visitor_browser' ? 'Your browser (browser check)' : report.checkedBy === 'browser_run' ? 'A real browser on our side' : 'Our server (page source and headers)'}</dd></div>
+          </dl>
         </div>
       ) : null}
 

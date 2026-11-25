@@ -3,7 +3,7 @@
 //   POST /api/lead  -> validates + grades the lead, forwards it (dry run by default), returns the full report
 //   GET  /api/health -> "ok" (for uptime checks)
 // Settings are Worker variables (wrangler.toml [vars]); secrets are set in Cloudflare, never in the repo.
-import { buildReport, freeSummary } from '../../engine/detect.js';
+import { buildReport, freeSummary, normalizeProbe } from '../../engine/detect.js';
 import { validateLead, gradeLead, buildLeadPayload, LeadError } from '../../engine/lead.js';
 import { normalizeInputUrl, guardedFetch, probeGtgPath, assetSubdomains, makeDeps, ScanError } from './net.js';
 import { browserTagRequests } from './browser.js';
@@ -29,15 +29,28 @@ export function getConfig(env = {}) {
 
 // ---------- scan ----------
 
-// The plain HTML cannot settle these, so they get the browser check (when configured).
+// The plain HTML cannot settle these, so they get the browser check (when configured): no tags seen,
+// a tag added by a script, a site that blocked our server, or tags run by a tag manager other than GTM
+// (Tealium, Adobe Launch...), which add the Google tag after load and often only after consent.
 function needsBrowser(report) {
   const v = report.verdict;
-  return v.status === 'no_google_tags' || (v.status === 'unconfirmed' && v.servingMode === 'not_in_static_html');
+  if (v.status === 'no_google_tags' || v.status === 'blocked') return true;
+  if (v.status === 'unconfirmed' && v.servingMode === 'not_in_static_html') return true;
+  const otherManager = (report.tagManagers || []).some((t) => t !== 'Google Tag Manager');
+  return otherManager && !(v.status === 'implemented' && v.confidence === 'verified');
 }
 
-export async function runScan(rawUrl, deps) {
+// visitorProbe: a result the visitor's own browser produced (already checked by normalizeProbe).
+export async function runScan(rawUrl, deps, visitorProbe = null) {
   const input = normalizeInputUrl(rawUrl);
-  const page = await guardedFetch(input, { deps });
+  let page;
+  try {
+    page = await guardedFetch(input, { deps });
+  } catch (e) {
+    // The server could not reach the site at all, but the visitor's browser did: use what it saw.
+    if (!visitorProbe || !(e instanceof ScanError) || !['timeout', 'fetch_failed'].includes(e.code)) throw e;
+    page = { url: input, status: 0, headers: {}, body: '', cnames: [], ips: [] };
+  }
   const finalUrl = page.url.href;
   const html = page.body;
   const scannedAt = new Date().toISOString();
@@ -52,21 +65,26 @@ export async function runScan(rawUrl, deps) {
 
   const base = { inputUrl: input.href, finalUrl, status: page.status, headers: page.headers, html, cnames: page.cnames, assetHosts, scannedAt, network };
 
-  // 1. Plain HTML.
-  let browser = { ran: false, error: 'browser_not_run', tagRequests: [] };
-  let draft = buildReport({ ...base, probes: {}, browser });
+  // 1. Plain HTML (plus the visitor's browser result, when one was sent).
+  let browser = visitorProbe ? null : { ran: false, error: 'browser_not_run', tagRequests: [] };
+  let draft = buildReport({ ...base, probes: {}, browser, pageProbe: visitorProbe });
 
-  // 2. If that cannot settle it, ask a real browser for the rendered page.
-  if (needsBrowser(draft) && deps.browserScan) {
+  // 2. If that cannot settle it, load the page in Cloudflare's browser with the in-page probe.
+  if (!visitorProbe && needsBrowser(draft) && deps.browserScan) {
     browser = await deps.browserScan(finalUrl).catch(() => ({ ran: false, error: 'browser_failed', tagRequests: [] }));
+    if (browser.probe) browser.probe = normalizeProbe(browser.probe, page.url.hostname, 'browser_run');
     draft = buildReport({ ...base, probes: {}, browser });
   }
 
-  // 3. Every first-party path found either way gets the health check (max 3).
-  const toProbe = draft.tags.loaders.filter((l) => l.serving === 'first_party_path').slice(0, 3);
+  // 3. Every first-party path found gets the server's own health check too (max 3). Paths a browser
+  // already confirmed from inside the page are skipped: the server is often blocked there.
+  const inPage = (visitorProbe || (browser && browser.probe) || { checks: [] }).checks;
+  const toProbe = draft.tags.loaders
+    .filter((l) => l.serving === 'first_party_path' && !inPage.some((c) => c.path === l.path && c.healthy))
+    .slice(0, 3);
   const probes = {};
   await Promise.all(toProbe.map(async (l) => { probes[l.path] = await probeGtgPath(page.url.origin, l.path, l.id, deps); }));
-  return buildReport({ ...base, probes, browser });
+  return buildReport({ ...base, probes, browser, pageProbe: visitorProbe });
 }
 
 // ---------- cache + rate limit (per Worker instance; KV / rate-limit bindings used when configured) ----------
@@ -113,7 +131,19 @@ async function verifyTurnstile(cfg, token, ip, fetchImpl) {
   } catch { return false; }
 }
 
-async function getReport(env, cfg, url, deps) {
+// A result from the visitor's browser, checked and trimmed. Throws for anything unusable.
+function visitorProbeFor(body) {
+  if (!body.probe) return null;
+  const host = normalizeInputUrl(body.url).hostname;
+  if (JSON.stringify(body.probe).length > 40_000) throw new ScanError('bad_probe', 'The browser check result is too large.');
+  const p = normalizeProbe(body.probe, host, 'visitor_browser');
+  if (!p) throw new ScanError('bad_probe', 'The browser check was run on a different site. Run it on the site you entered.');
+  return p;
+}
+
+async function getReport(env, cfg, url, deps, visitorProbe = null) {
+  // Visitor-supplied results are never cached: they must not change what anyone else sees.
+  if (visitorProbe) return { report: await runScan(url, deps, visitorProbe), cached: false };
   const host = normalizeInputUrl(url).hostname;
   const key = `scan:${host}`;
   const hit = await cacheGet(env, key);
@@ -136,12 +166,14 @@ export async function handleScan(body, { env, cfg, ip, deps, fetchImpl }) {
   let host;
   try { host = normalizeInputUrl(body.url).hostname; } catch (e) { return scanError(e); }
   if (!(await verifyTurnstile(cfg, body.turnstileToken, ip, fetchImpl))) return [403, { error: 'bot_check', message: 'Complete the human check and try again.' }];
+  let visitorProbe;
+  try { visitorProbe = visitorProbeFor(body); } catch (e) { return scanError(e); }
   // Cached results cost nothing, so only real scans count against the limit.
-  const hit = await cacheGet(env, `scan:${host}`);
+  const hit = visitorProbe ? null : await cacheGet(env, `scan:${host}`);
   if (hit) return [200, { summary: freeSummary(hit), cached: true }];
   if (await rateLimited(env, `scan:${ip}`, cfg.scanRatePerMinute)) return [429, { error: 'rate_limited', message: 'Too many checks from your network. Wait a minute and try again.' }];
   try {
-    const { report, cached } = await getReport(env, cfg, body.url, deps);
+    const { report, cached } = await getReport(env, cfg, body.url, deps, visitorProbe);
     return [200, { summary: freeSummary(report), cached }];
   } catch (e) { return scanError(e); }
 }
@@ -165,7 +197,7 @@ export async function handleLead(body, { env, cfg, ip, deps, fetchImpl, page }) 
   if (await rateLimited(env, `lead:${ip}`, cfg.leadRatePerMinute)) return [429, { error: 'rate_limited', message: 'Too many requests. Wait a minute and try again.' }];
   try {
     const lead = validateLead(body);
-    const { report } = await getReport(env, cfg, body.url, deps);
+    const { report } = await getReport(env, cfg, body.url, deps, visitorProbeFor(body));
     const grading = gradeLead(lead, report);
     const payload = buildLeadPayload(lead, grading, report, { consentVersion: CONSENT_VERSION, page: String(body.page || page || '').slice(0, 300) });
     const stored = await storeLead(cfg, payload, fetchImpl);
@@ -200,7 +232,7 @@ export function makeHandler({ fetchImpl = (...a) => fetch(...a) } = {}) {
     if (request.method !== 'POST') return json(405, { error: 'method_not_allowed' }, cors);
     // Browsers always send Origin on cross-site POSTs: only the listed sites may call the API.
     if (origin && !cfg.allowedOrigins.includes(origin)) return json(403, { error: 'forbidden', message: 'Requests from this site are not allowed.' }, cors);
-    if (Number(request.headers.get('content-length') || 0) > 20_000) return json(413, { error: 'too_large' }, cors);
+    if (Number(request.headers.get('content-length') || 0) > 60_000) return json(413, { error: 'too_large' }, cors);
     const body = await request.json().catch(() => ({}));
     const ip = request.headers.get('cf-connecting-ip') || 'unknown';
     const deps = { ...makeDeps(fetchImpl), browserScan: (u) => browserTagRequests(u, env, fetchImpl) };

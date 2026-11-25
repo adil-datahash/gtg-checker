@@ -19,17 +19,25 @@ export function verdictCopy(s) {
         tone: 'neutral',
         title: 'We could not confirm Google tag gateway',
         body: s.unconfirmedReason === 'not_seen_in_browser'
-          ? 'A Google tag is on this page, but we could not see where it loads from, even after loading the page in a browser. Tags often wait for cookie consent or load only on some pages. We can check it by hand.'
-          : 'A Google tag is on this page, but it is added by a script after the page loads, so this quick check cannot see where it loads from. We can check it by hand.'
+          ? 'A Google tag is on this page, but we could not see where it loads from, even after loading the page in a browser and accepting cookies. Tags may load only on some pages. Run the check from your own browser below, or we can check it by hand.'
+          : 'A Google tag is on this page, but it is added by a script after the page loads, so this quick check cannot see where it loads from. Run the check from your own browser below, or we can check it by hand.'
       };
     case 'no_google_tags':
-      return { tone: 'neutral', title: 'No Google tags found', body: 'We did not find Google Tag Manager, GA4 or Google Ads tags on this page. If you expected them, they may load only on other pages or after cookie consent.' };
+      return { tone: 'neutral', title: 'No Google tags found', body: 'We did not find Google Tag Manager, GA4 or Google Ads tags on this page, even after accepting cookies where we could. If you expected them, run the check from your own browser below.' };
     case 'blocked':
-      return { tone: 'neutral', title: 'We could not scan this site automatically', body: `The site's security layer stopped our checker${s.blockedReason ? ` (${s.blockedReason})` : ''}. That is common on well-protected sites, and we can check it by hand.` };
+      return { tone: 'neutral', title: 'We could not scan this site automatically', body: `The site's security layer stopped our checker${s.blockedReason ? ` (${s.blockedReason})` : ''}${s.browserBlocked ? ', and our real-browser check too' : ''}. That is common on well-protected sites. Run the check from your own browser below to get the answer.` };
     default:
       return { tone: 'neutral', title: 'Check complete', body: '' };
   }
 }
+
+export const CONSENT_MODE = {
+  not_found: 'Not found on this page',
+  granted_by_default: 'Set up, with consent granted by default',
+  denied_by_default: 'Set up, with consent denied by default',
+  advanced: 'Advanced: Google tags load before consent and send cookieless pings',
+  basic: 'Basic: Google tags wait until the visitor accepts'
+};
 
 export const ELIGIBILITY = {
   yes: { label: 'Ready for setup', text: 'Your setup supports Google tag gateway.' },

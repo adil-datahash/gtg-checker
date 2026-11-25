@@ -1,13 +1,14 @@
 'use client';
 
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { scanSite, submitLead } from '@/lib/client/api.js';
+import { scanSite, submitLead, takeProbeFromHash } from '@/lib/client/api.js';
 import { track, readUtm } from '@/lib/client/track.js';
 import RoutePath from './RoutePath.jsx';
 import ScanProgress from './ScanProgress.jsx';
 import Verdict from './Verdict.jsx';
 import ReportGate from './ReportGate.jsx';
 import FullReport from './FullReport.jsx';
+import BrowserCheck from './BrowserCheck.jsx';
 import Turnstile, { TURNSTILE_ON } from './Turnstile.jsx';
 
 function displayHost(input) {
@@ -34,16 +35,30 @@ export default function Checker() {
   const [gateError, setGateError] = useState('');
   const [token, setToken] = useState('');
   const scannedUrl = useRef('');
+  const visitorProbe = useRef(null);
+  const [pendingProbe, setPendingProbe] = useState(null);
   const resultRef = useRef(null);
   const onToken = useCallback((t) => setToken(t), []);
 
   // Prefill from ?url= so the tool can be linked to with a site already filled in.
+  // A result from the "check from your browser" script arrives after #probe= instead.
   useEffect(() => {
+    const p = takeProbeFromHash();
+    if (p) { setUrl(p.host); setPendingProbe(p); return; }
     try {
       const q = new URLSearchParams(window.location.search).get('url');
       if (q) setUrl(q.slice(0, 200));
     } catch {}
   }, []);
+
+  // Run the scan with the browser result once the human check (if any) is done.
+  useEffect(() => {
+    if (!pendingProbe || (TURNSTILE_ON && !token)) return;
+    const p = pendingProbe;
+    setPendingProbe(null);
+    start(p.host, p);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [pendingProbe, token]);
 
   useEffect(() => {
     if (phase === 'result' && resultRef.current) resultRef.current.focus({ preventScroll: false });
@@ -53,12 +68,17 @@ export default function Checker() {
     e.preventDefault();
     if (!url.trim()) { setError('Enter your website address, like yourbrand.com.'); setPhase('error'); return; }
     if (TURNSTILE_ON && !token) { setError('Complete the human check, then try again.'); setPhase('error'); return; }
+    start(url.trim(), null);
+  }
+
+  async function start(target, probe) {
     setError(''); setSummary(null); setReport(null); setGateError('');
-    scannedUrl.current = url.trim();
+    scannedUrl.current = target;
+    visitorProbe.current = probe;
     setPhase('scanning');
-    track('gtg_scan_started');
+    track('gtg_scan_started', { from_browser_check: Boolean(probe) });
     try {
-      const data = await scanSite(scannedUrl.current, token);
+      const data = await scanSite(scannedUrl.current, token, probe);
       setSummary(data.summary);
       setPhase('result');
       track('gtg_scan_completed', { result_status: data.summary.status, cdn: data.summary.cdn || 'none', gateway_on: data.summary.gtgServedBy || 'none', eligible: data.summary.eligible });
@@ -72,7 +92,7 @@ export default function Checker() {
   async function unlock(lead) {
     setGateBusy(true); setGateError('');
     try {
-      const data = await submitLead({ url: scannedUrl.current, lead, utm: readUtm() });
+      const data = await submitLead({ url: scannedUrl.current, lead, utm: readUtm(), probe: visitorProbe.current });
       setReport(data.report);
       setDryRun(Boolean(data.dryRun));
       track('gtg_lead_submitted', { result_status: data.report.verdict.status, route: data.report.route.key });
@@ -126,6 +146,7 @@ export default function Checker() {
       {phase === 'result' && summary ? (
         <div className="results" ref={resultRef} tabIndex={-1}>
           <Verdict summary={summary} onReset={reset} />
+          {['blocked', 'unconfirmed', 'no_google_tags'].includes(summary.status) && summary.checkedBy !== 'visitor_browser' ? <BrowserCheck summary={summary} /> : null}
           <section className="diagram-panel" aria-label="How your Google tags load">
             <RoutePath state={pathState(summary.status)} host={summary.host} cdn={summary.gtgServedBy || summary.cdn} path={gatewayPath} />
           </section>

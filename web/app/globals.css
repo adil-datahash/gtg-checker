@@ -246,3 +246,13 @@ th { font-weight: 500; color: var(--muted); }
 .site-header nav a:hover { color: var(--ink); }
 .site-footer { display: flex; flex-wrap: wrap; gap: 8px 24px; justify-content: space-between; }
 .site-footer a { color: var(--muted); }
+
+/* Check from your browser */
+.checked-by { margin: 8px 0 0; color: var(--muted); font-size: 0.9375rem; }
+.browser-check { border: 1px solid var(--line); border-radius: var(--radius-m); padding: 20px 24px; margin: 0 0 24px; }
+.browser-check h3 { margin: 0 0 8px; }
+.browser-check .steps { margin: 8px 0 12px; padding-left: 1.25rem; display: grid; gap: 8px; }
+.bookmarklet { display: inline-block; padding: 4px 12px; border-radius: 999px; background: var(--blue); color: var(--blue-ink); text-decoration: none; font-weight: 700; cursor: grab; }
+.btn-secondary { background: none; border: 1px solid var(--line); border-radius: 6px; padding: 6px 12px; font: inherit; color: var(--ink); cursor: pointer; }
+.btn-secondary:disabled { opacity: 0.55; cursor: not-allowed; }
+kbd { font-family: var(--mono, ui-monospace, monospace); font-size: 0.875em; border: 1px solid var(--line); border-radius: 4px; padding: 0 4px; }
